@@ -1,0 +1,135 @@
+---
+title: "data pre-processing"
+format: html
+editor: visual
+---
+
+```{python}
+import pickle as pkl
+import pandas as pd
+from collections import Counter
+from transformers import pipeline, AutoTokenizer
+import numpy as np
+from langdetect import detect, DetectorFactory
+from transformers import MarianMTModel, MarianTokenizer, AutoTokenizer
+
+DetectorFactory.seed = 42
+def is_english(text):
+    if text == "None" or pd.isna(text):
+      return True
+    try:
+        return detect(text) == 'en'
+    except:
+        return False
+
+def count_tokens(text):
+    tokens = tokenizer.encode(text)
+    return len(tokens)
+
+def truncate_text(text, max_length):
+    tokens = tokenizer.tokenize(text)
+    truncated_tokens = tokens[-max_length:] 
+    return tokenizer.convert_tokens_to_string(truncated_tokens)
+  
+def translate_to_english(text):
+    inputs = tokenizer.encode(text, return_tensors='pt', truncation=True)
+    outputs = model.generate(inputs, max_length=512, num_beams=4, early_stopping=True)
+    return tokenizer.decode(outputs[0], skip_special_tokens=True)
+```
+
+loading data
+
+```{python}
+with open("data.pkl", "rb") as mydata:
+  users = pkl.load(mydata)
+  
+with open("unique_books_of_filtered_users_extended.pkl", "rb") as mydata:
+  book_ext_info = pkl.load(mydata)
+```
+
+main dict to df datastructure
+
+```{python}
+filtered_reviews = []
+for user_id, user_info in users.items():
+    for review in user_info['reviews']:
+        if "book_rating_user" in review:
+            if review["book_rating_user"] != "":
+                review_dict = review.copy()
+                review_dict['user_id'] = user_id
+                review_dict['user_stats'] = user_info["user_stats"]
+                filtered_reviews.append(review_dict)
+df = pd.DataFrame(filtered_reviews)
+```
+
+filter out books users that appear only once
+
+```{python}
+user_counts = df['user_id'].value_counts()
+filtered_user_ids = user_counts[user_counts > 1].index
+df = df[df['user_id'].isin(filtered_user_ids)]
+
+book_href_counts = df['book_href'].value_counts()
+filtered_book_href_ids = book_href_counts[book_href_counts > 1].index
+df = df[df['book_href'].isin(filtered_book_href_ids)]
+```
+
+merge in book level data (e.g. genre)
+
+```{python}
+book_df = pd.DataFrame.from_dict(book_ext_info, orient='index')
+book_df.reset_index(inplace=True)
+book_df.rename(columns={'index': 'book_href'}, inplace=True)
+df = df.merge(book_df[["book_href", "book_summary", "book_genres", "book_related_books", "book_pages"]], on='book_href', how='left')
+
+all_genres = [genre for sublist in df['book_genres'] if isinstance(sublist, list) for genre in sublist]
+genre_counts = Counter(all_genres)
+
+top_genres = [genre for genre, count in genre_counts.most_common(20)]
+for genre in top_genres:
+    df[genre] = df['book_genres'].apply( lambda genres: 1 if isinstance(genres, list) and genre in genres else 0)
+
+```
+
+```{python}
+len(np.unique(all_genres))
+all_genres[160:190]
+```
+
+generate sentiment scores
+
+```{python}
+df["review_english_bool"] = df["book_review_user"].apply(is_english)
+
+#translate
+model_name = 'Helsinki-NLP/opus-mt-mul-en'
+tokenizer = MarianTokenizer.from_pretrained(model_name)
+model = MarianMTModel.from_pretrained(model_name)
+
+df.loc[~ df.review_english_bool, "book_review_user"] = df.loc[~ df.review_english_bool, "book_review_user"].apply(translate_to_english) 
+```
+
+```{python}
+#sentiment score
+model_name_sent = "distilbert/distilbert-base-uncased-finetuned-sst-2-english"
+sentiment_pipeline = pipeline("sentiment-analysis", model = model_name_sent)
+
+tokenizer = AutoTokenizer.from_pretrained(model_name_sent)
+
+max_length = tokenizer.model_max_length -6 #there appears to be some randomness in the splitting
+
+df["elligible_for_sentiment"] = (df["book_review_user"] != "None") & (~ df["book_review_user"].isna())
+
+df.loc[df.elligible_for_sentiment,'truncated_review'] = df.loc[df.elligible_for_sentiment,'book_review_user'].apply(lambda x: truncate_text(x, max_length))
+
+df.loc[df.elligible_for_sentiment,'nr_of_tokens'] = df.loc[df.elligible_for_sentiment,'truncated_review'].apply(count_tokens)
+
+if max(df['nr_of_tokens'] ) > max_length:
+    raise ValueError("truncation wasn't sufficient")
+  
+df.loc[df.elligible_for_sentiment, "sentiment_label"] = [output["label"] for output in sentiment_pipeline(df.loc[df.elligible_for_sentiment,"truncated_review"].tolist())]
+```
+
+```{python}
+#df.to_csv("processed_data.csv", index = False)
+```

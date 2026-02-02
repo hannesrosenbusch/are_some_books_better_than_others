@@ -1,0 +1,234 @@
+---
+title: "finetuning"
+format: html
+editor: visual
+---
+
+```{r}
+#hand label text reviews into csv
+redo = FALSE
+if(redo){
+  df = read.csv("fiction.csv")
+  for(i in 1:nrow(df)){
+    if(df$book_review_user[i] != "None" & is.na(df$book_review_user_annotations[i])){
+      print(paste("\n", df$book_review_user[i], "\n"))
+      df$book_review_user_annotations[i] = readline(prompt = "copy review and annotation for this review into annotation_finetuning.csv")
+      
+    }
+  }
+}
+```
+
+```{python}
+#setup
+import csv
+import json
+import openai
+import os
+import sys
+openai.api_key = os.environ["OPENAI_API_KEY"]
+
+client = openai.OpenAI()
+
+system_prompt = (
+    "You are a text annotator who receives book reviews and only answers with numerical annotations."
+    " The meanings of your numerical outputs are as follows."
+    " 1: the reader was confused or didn't understand something, "
+    "2: the review mentions specific characters, "
+    "3: the reader was addicted or had to keep reading, "
+    "4: the reader was bored or found content unnecessary, "
+    "5: the review includes a book summary, "
+    "6: the review mentions writing craft or the skill of the author."
+)
+
+csv_file_path = 'annotation_finetuning.csv'
+output_json_file = 'annotation_finetuning.json'
+```
+
+```{python}
+#reformat data for openai finetuning
+
+json_entries = []
+with open(csv_file_path, 'r', encoding='utf-8') as csv_file:
+    csv_reader = csv.reader(csv_file)
+    for row in csv_reader:
+        if len(row) != 2:
+          raise ValueError("ERRORR")
+        prompt, response = row
+        json_entry = {
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt},
+                {"role": "assistant", "content": response}
+            ]
+        }
+        json_entries.append(json_entry)
+
+with open(output_json_file, 'w') as json_file:
+    for entry in json_entries:
+        json.dump(entry, json_file)
+        json_file.write('\n')
+        
+#format check and estimate costs
+import json
+import tiktoken # for token counting
+import numpy as np
+from collections import defaultdict
+
+
+# Load the dataset
+with open(output_json_file, 'r', encoding='utf-8') as f:
+    dataset = [json.loads(line) for line in f]
+
+# Initial dataset stats
+print("Num examples:", len(dataset))
+# Format error checks
+format_errors = defaultdict(int)
+
+for ex in dataset:
+    if not isinstance(ex, dict):
+        format_errors["data_type"] += 1
+        continue
+        
+    messages = ex.get("messages", None)
+    if not messages:
+        format_errors["missing_messages_list"] += 1
+        continue
+        
+    for message in messages:
+        if "role" not in message or "content" not in message:
+            format_errors["message_missing_key"] += 1
+        
+        if any(k not in ("role", "content", "name", "function_call", "weight") for k in message):
+            format_errors["message_unrecognized_key"] += 1
+        
+        if message.get("role", None) not in ("system", "user", "assistant", "function"):
+            format_errors["unrecognized_role"] += 1
+            
+        content = message.get("content", None)
+        function_call = message.get("function_call", None)
+        
+        if (not content and not function_call) or not isinstance(content, str):
+            format_errors["missing_content"] += 1
+    
+    if not any(message.get("role", None) == "assistant" for message in messages):
+        format_errors["example_missing_assistant_message"] += 1
+
+if format_errors:
+    print("Found errors:")
+    for k, v in format_errors.items():
+        print(f"{k}: {v}")
+else:
+    print("No errors found")
+    
+encoding = tiktoken.get_encoding("cl100k_base")
+
+# not exact!
+# simplified from https://github.com/openai/openai-cookbook/blob/main/examples/How_to_count_tokens_with_tiktoken.ipynb
+def num_tokens_from_messages(messages, tokens_per_message=3, tokens_per_name=1):
+    num_tokens = 0
+    for message in messages:
+        num_tokens += tokens_per_message
+        for key, value in message.items():
+            num_tokens += len(encoding.encode(value))
+            if key == "name":
+                num_tokens += tokens_per_name
+    num_tokens += 3
+    return num_tokens
+
+def num_assistant_tokens_from_messages(messages):
+    num_tokens = 0
+    for message in messages:
+        if message["role"] == "assistant":
+            num_tokens += len(encoding.encode(message["content"]))
+    return num_tokens
+
+def print_distribution(values, name):
+    print(f"\n#### Distribution of {name}:")
+    print(f"min / max: {min(values)}, {max(values)}")
+    print(f"mean / median: {np.mean(values)}, {np.median(values)}")
+    print(f"p5 / p95: {np.quantile(values, 0.1)}, {np.quantile(values, 0.9)}")
+    
+# Warnings and tokens counts
+n_missing_system = 0
+n_missing_user = 0
+n_messages = []
+convo_lens = []
+assistant_message_lens = []
+
+for ex in dataset:
+    messages = ex["messages"]
+    if not any(message["role"] == "system" for message in messages):
+        n_missing_system += 1
+    if not any(message["role"] == "user" for message in messages):
+        n_missing_user += 1
+    n_messages.append(len(messages))
+    convo_lens.append(num_tokens_from_messages(messages))
+    assistant_message_lens.append(num_assistant_tokens_from_messages(messages))
+    
+print("Num examples missing system message:", n_missing_system)
+print("Num examples missing user message:", n_missing_user)
+print_distribution(n_messages, "num_messages_per_example")
+print_distribution(convo_lens, "num_total_tokens_per_example")
+print_distribution(assistant_message_lens, "num_assistant_tokens_per_example")
+n_too_long = sum([l > 16385 for l in convo_lens])
+print(f"\n{n_too_long} examples may be over the 16,385 token limit, they will be truncated during fine-tuning")
+
+# Pricing and default n_epochs estimate
+MAX_TOKENS_PER_EXAMPLE = 16385
+
+TARGET_EPOCHS = 3
+MIN_TARGET_EXAMPLES = 100
+MAX_TARGET_EXAMPLES = 25000
+MIN_DEFAULT_EPOCHS = 1
+MAX_DEFAULT_EPOCHS = 25
+
+n_epochs = TARGET_EPOCHS
+n_train_examples = len(dataset)
+if n_train_examples * TARGET_EPOCHS < MIN_TARGET_EXAMPLES:
+    n_epochs = min(MAX_DEFAULT_EPOCHS, MIN_TARGET_EXAMPLES // n_train_examples)
+elif n_train_examples * TARGET_EPOCHS > MAX_TARGET_EXAMPLES:
+    n_epochs = max(MIN_DEFAULT_EPOCHS, MAX_TARGET_EXAMPLES // n_train_examples)
+
+n_billing_tokens_in_dataset = sum(min(MAX_TOKENS_PER_EXAMPLE, length) for length in convo_lens)
+print(f"Dataset has ~{n_billing_tokens_in_dataset} tokens that will be charged for during training")
+print(f"By default, you'll train for {n_epochs} epochs on this dataset")
+print(f"By default, you'll be charged for ~{n_epochs * n_billing_tokens_in_dataset} tokens")
+```
+
+```{python}
+# upload finetuning file and start finetuning
+# https://platform.openai.com/docs/guides/fine-tuning/fine-tuning-examples
+
+f = client.files.create(
+  file=open(output_json_file, "rb"),
+  purpose="fine-tune"
+)
+
+j = client.fine_tuning.jobs.create(
+  training_file='file-rZufLqepKMxgPOkAvObi5Jfb', 
+  model="gpt-4o-mini-2024-07-18")
+
+client.fine_tuning.jobs.retrieve("ftjob-KLcIXRe8Jql77sHXbsiFxagI") #update name
+```
+
+```{python}
+import pandas as pd
+df = pd.read_csv("fiction.csv")
+print(df.shape)
+for i in range(len(df)):
+  if pd.notna(df.book_review_user[i]) and df.gpt_review_labels[i] == "labels missing":
+    print(i)
+    completion = client.chat.completions.create(model="ft:gpt-4o-mini-2024-07-18:university-of-amsterdam::9vmUSzwd", temperature = 0, messages=[{"role": "system", "content": system_prompt},{"role": "user", "content": df.book_review_user[i]}])
+    
+    df.loc[i, "gpt_review_labels"] = completion.choices[0].message.content
+    if df.shape[0] == 124384:
+      df.to_csv('fiction.csv', index=False)
+      if i % 20 == 0:
+        print(df.book_review_user[i])
+        print(df.gpt_review_labels[i])
+        df.to_csv('backup_trash.csv', index=False)
+    else:
+      print("wrong number rows recovered")
+      break
+```

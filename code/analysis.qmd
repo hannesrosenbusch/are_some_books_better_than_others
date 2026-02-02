@@ -1,0 +1,718 @@
+# read data
+
+```{r}
+library(dplyr, warn.conflicts = F)
+library(ggplot2)
+library(lme4)
+
+calc.icc <- function(y) {
+  sumy <- summary(y)
+  usr = sumy$varcor$user_id[1] / (sumy$varcor$user_id[1] + sumy$varcor$book_href[1]+sumy$sigma^2)
+  bk = sumy$varcor$book_href[1] / (sumy$varcor$user_id[1] + sumy$varcor$book_href[1]+  sumy$sigma^2)
+  c(usr, bk, usr-bk)
+}
+
+has_nonfic_genre <- function(genres, non_fic_genres, potential_nonfic_genres) {
+  genre_list <- unlist(strsplit(gsub("[\\[\\]']", "", genres), "', '"))
+  genre_list <- gsub("'", "", genre_list)
+  any(genre_list %in% non_fic_genres) | all(genre_list %in% potential_nonfic_genres)
+}
+
+
+NR_SAMPLES = 10000
+bootstrap_N = 100
+df = read.csv("processed_data.csv")
+df <- df %>%
+  mutate(book_rating_user_num = case_when(
+    book_rating_user == "it was amazing" ~ 5,
+    book_rating_user == "really liked it" ~ 4,
+    book_rating_user == "liked it" ~ 3,
+    book_rating_user == "it was ok" ~ 2,
+    book_rating_user == "did not like it" ~ 1 ))
+df$book_href <- gsub("/book/show/", "",df$book_href)
+df$user_id <- paste0("ID", df$user_id)
+
+```
+
+```{r}
+#gives warnings for users that dont have data / dont exist
+df$user_nr_ratings =  as.numeric(sapply(strsplit(as.character(df$user_stats), " "), `[`, 1))
+
+genre_filters = read.csv("genre_filters.csv")
+non_fic_genres = genre_filters$Genre[genre_filters$Allowedness == "forbidden"]
+potential_nonfic_genres = genre_filters$Genre[genre_filters$Allowedness == "Provisional rejection"]
+df$book_nonfic_bool <- sapply(df$book_genres, has_nonfic_genre, non_fic_genres, potential_nonfic_genres)
+```
+
+# descriptives
+
+```{r}
+nrow(df)
+
+length(unique(df$book_href))
+
+length(unique(df$user_id))
+
+sum(df$book_review_user != "None")
+
+median_nr_book_ratings = df %>%
+  group_by(book_href) %>%
+  slice(1) %>%
+  ungroup() %>%
+  summarize(median(book_nr_ratings, na.rm = T)) %>% unlist()
+```
+
+# main ICC analysis
+
+```{r}
+#main analysis
+# start_time <- Sys.time()
+# 
+# model = lme4::lmer(book_rating_user_num ~ (1|user_id) + (1|book_href), data=df)
+# sigm = (sigma(model))^2
+# summary(model)
+# 
+
+# ##https://bit.ly/2NMf2wp
+# results = lme4::bootMer(model, calc.icc, nsim = bootstrap_N, verbose = T)
+# end_time <- Sys.time()
+# execution_time <- end_time - start_time
+# print(execution_time)
+# 
+# beepr::beep()
+# write.csv(results, "bootstrap_results.csv")
+# # 
+results = read.csv("bootstrap_results.csv", col.names = c("index", "rater", "book", "difference"))
+
+print("rater")
+summary(results$rater)
+quantile(results$rater, 0.025)
+quantile(results$rater, 0.975)
+print("book")
+summary(results$book)
+quantile(results$book, 0.025)
+quantile(results$book, 0.975)
+print("difference")
+results$difference = results$rater / results$book
+summary(results$difference)
+quantile(results$difference, 0.025)
+quantile(results$difference, 0.975)
+```
+
+```{r}
+#analysis below median nr book ratings
+# start_time <- Sys.time()
+# 
+# model = lme4::lmer(book_rating_user_num ~ (1|user_id) + (1|book_href), data=df[df$book_nr_ratings < median_nr_book_ratings,])
+# sigm = (sigma(model))^2
+# summary(model)
+# 
+# 
+# # ##https://bit.ly/2NMf2wp
+# results = lme4::bootMer(model, calc.icc, nsim = bootstrap_N, verbose = T)
+# end_time <- Sys.time()
+# execution_time <- end_time - start_time
+# print(execution_time)
+# 
+# beepr::beep()
+# write.csv(results, "bootstrap_results_belowmedian.csv")
+# # #
+# results = read.csv("bootstrap_results_belowmedian.csv", col.names = c("index", "rater", "book", "difference"))
+# 
+# print("rater")
+# summary(results$rater)
+# quantile(results$rater, 0.025)
+# quantile(results$rater, 0.975)
+# print("book")
+# summary(results$book)
+# quantile(results$book, 0.025)
+# quantile(results$book, 0.975)
+# print("difference")
+# results$difference = results$rater / results$book
+# summary(results$difference)
+# quantile(results$difference, 0.025)
+# quantile(results$difference, 0.975)
+```
+
+```{r}
+# analysis for fiction only
+# write.csv(df[!df$book_nonfic_bool,], "fiction.csv")
+# start_time <- Sys.time()
+# 
+# model = lme4::lmer(book_rating_user_num ~ (1|user_id) + (1|book_href), data=df[!df$book_nonfic_bool,])
+# sigm = (sigma(model))^2
+# summary(model)
+# 
+# 
+# # ##https://bit.ly/2NMf2wp
+# results = lme4::bootMer(model, calc.icc, nsim = bootstrap_N, verbose = T)
+# end_time <- Sys.time()
+# execution_time <- end_time - start_time
+# print(execution_time)
+# 
+# beepr::beep()
+# write.csv(results, "bootstrap_results_fiction.csv")
+# #
+# results = read.csv("bootstrap_results_fiction.csv", col.names = c("index", "rater", "book", "difference"))
+# 
+# print("rater")
+# summary(results$rater)
+# quantile(results$rater, 0.025)
+# quantile(results$rater, 0.975)
+# print("book")
+# summary(results$book)
+# quantile(results$book, 0.025)
+# quantile(results$book, 0.975)
+# print("difference")
+# results$difference = results$rater / results$book
+# summary(results$difference)
+# quantile(results$difference, 0.025)
+# quantile(results$difference, 0.975)
+```
+
+```{r}
+#analysis of within genre ratings
+##only uncomment if needed
+# df = read.csv("processed_data.csv")
+# df <- df %>%
+#   mutate(book_rating_user_num = case_when(
+#     book_rating_user == "it was amazing" ~ 5,
+#     book_rating_user == "really liked it" ~ 4,
+#     book_rating_user == "liked it" ~ 3,
+#     book_rating_user == "it was ok" ~ 2,
+#     book_rating_user == "did not like it" ~ 1 ))
+# df$book_href <- gsub("/book/show/", "",df$book_href)
+# df$user_id <- paste0("ID", df$user_id)
+# 
+# #remove last row (all NAs)
+# df <- df[rowSums(is.na(df)) < 0.5 * ncol(df), ]
+# 
+# df$keep <- FALSE
+# 
+# # List of genre columns
+# genre_cols <- c("Fiction", "Fantasy", "Young.Adult", "Classics", "Romance", "Audiobook", "Nonfiction", 
+#                 "Contemporary", "Historical.Fiction", "Mystery", "Literature", "Childrens", "Novels", 
+#                 "Science.Fiction", "Thriller", "Adventure", "Adult", "Historical", "Middle.Grade", "Crime")
+# 
+# 
+# #keeping only rows when user has rated at least two books highly that had similar genres (deletes out-of-genre reading)
+# for(i in 1:nrow(df)){
+#   current_user <- df$user_id[i]
+#   current_genres <- genre_cols[as.logical(df[i, genre_cols])]
+#   sum_current_genres = sum(df[i, genre_cols])
+#   user_books <- df %>%
+#     filter(user_id == current_user) %>%
+#     filter(book_rating_user_num >= 4) %>%
+#     select(all_of(current_genres)) %>%
+#     filter(rowSums(.) >= min(3, sum_current_genres))
+#   
+#   # Check if any book by this user in the same genres has a rating of 4 or 5
+#   if(nrow(user_books) > 1){
+#     df$keep[i] <- TRUE
+#   }
+# }
+# sum(df$keep)
+# beepr::beep()
+# 
+# write.csv(df, "within_genre_ratings.csv")
+
+# within_df = read.csv("within_genre_ratings.csv")
+# within_df = within_df %>% filter(keep)
+# 
+# start_time <- Sys.time()
+# 
+# model = lme4::lmer(book_rating_user_num ~ (1|user_id) + (1|book_href), data=within_df)
+# sigm = (sigma(model))^2
+# summary(model)
+# 
+# # # ##https://bit.ly/2NMf2wp
+# results = lme4::bootMer(model, calc.icc, nsim = bootstrap_N, verbose = T)
+# end_time <- Sys.time()
+# execution_time <- end_time - start_time
+# print(execution_time)
+# 
+# beepr::beep()
+# write.csv(results, "bootstrap_results_within_genre.csv")
+# # #
+# results = read.csv("bootstrap_results_within_genre.csv", col.names = c("index", "rater", "book", "difference"))
+# 
+# print("rater")
+# summary(results$rater)
+# quantile(results$rater, 0.025)
+# quantile(results$rater, 0.975)
+# print("book")
+# summary(results$book)
+# quantile(results$book, 0.025)
+# quantile(results$book, 0.975)
+# print("difference")
+# results$difference = results$rater / results$book
+# summary(results$difference)
+# quantile(results$difference, 0.025)
+# quantile(results$difference, 0.975)
+```
+
+```{r}
+#analysis for reviewers with varied ratings
+df_varied = df %>%
+  group_by(user_id) %>%
+  mutate(unique_rating_count = n_distinct(book_rating_user)) %>% ungroup() %>%
+  filter(unique_rating_count > 1)
+
+model = lme4::lmer(book_rating_user_num ~ (1|user_id) + (1|book_href), data=df_varied)
+sigm = (sigma(model))^2
+summary(model)
+calc.icc(model)
+results = lme4::bootMer(model, calc.icc, nsim = bootstrap_N, verbose = T)
+beepr::beep()
+write.csv(results, "bootstrap_results_varied.csv")
+results = read.csv("bootstrap_results_varied.csv", col.names = c("index", "rater", "book", "difference"))
+
+print("rater")
+summary(results$rater)
+quantile(results$rater, 0.025)
+quantile(results$rater, 0.975)
+print("book")
+summary(results$book)
+quantile(results$book, 0.025)
+quantile(results$book, 0.975)
+print("difference")
+results$difference = results$rater / results$book
+summary(results$difference)
+quantile(results$difference, 0.025)
+quantile(results$difference, 0.975)
+
+```
+
+```{r}
+# analysis for experienced reviewers only
+experts = df %>%
+  group_by(user_id) %>%
+  filter(user_nr_ratings > 10) %>%
+  mutate(
+    review_count = as.numeric(stringr::str_extract(user_stats, "\\d+(?=\\s+reviews?)")
+  )) %>%
+  filter(review_count > 5)
+experts = unique(experts$user_id)
+nrow(df[df$user_id %in% experts,])
+# 
+# start_time <- Sys.time()
+# 
+# model = lme4::lmer(book_rating_user_num ~ (1|user_id) + (1|book_href), data=df[df$user_id %in% experts,])
+# sigm = (sigma(model))^2
+# summary(model)
+# 
+# 
+# # ##https://bit.ly/2NMf2wp
+# results = lme4::bootMer(model, calc.icc, nsim = bootstrap_N, verbose = T)
+# end_time <- Sys.time()
+# execution_time <- end_time - start_time
+# print(execution_time)
+# 
+# beepr::beep()
+# write.csv(results, "bootstrap_results_experts.csv")
+# #
+results = read.csv("bootstrap_results_experts.csv", col.names = c("index", "rater", "book", "difference"))
+
+print("rater")
+summary(results$rater)
+quantile(results$rater, 0.025)
+quantile(results$rater, 0.975)
+print("book")
+summary(results$book)
+quantile(results$book, 0.025)
+quantile(results$book, 0.975)
+print("difference")
+results$difference = results$rater / results$book
+summary(results$difference)
+quantile(results$difference, 0.025)
+quantile(results$difference, 0.975)
+```
+
+# plots conditional probability
+
+simulate conditional ratings from rater A, given rater B
+
+```{r}
+ratings_paired_books = matrix(nrow = 0, ncol = 2)
+
+for(i in 1:NR_SAMPLES){
+  set.seed(i)
+  random_book = sample(unique(df$book_href), 1)
+  ratings_random_book = df[df$book_href == random_book, "book_rating_user_num"]
+  ratings_paired_books= rbind(sample(ratings_random_book, 2), ratings_paired_books)
+}
+
+conditional_ratings_prob = prop.table(table(ratings_paired_books[,1], ratings_paired_books[,2]), margin = 2)
+conditional_ratings_prob = as.data.frame(conditional_ratings_prob)
+colnames(conditional_ratings_prob) = c("Rater B's rating", "Rater A's rating",  "t")
+conditional_ratings_prob["Rating B | A"] = gsub("0.", ".", as.character(round(conditional_ratings_prob$t, 2)), fixed = T)
+
+plot_same_book_diff_raters = ggplot(conditional_ratings_prob, aes(`Rater A's rating`, `Rater B's rating` )) +
+  geom_tile(aes(fill = t)) + 
+  geom_label(aes(label = `Rating B | A`), alpha = 0.3, size = 9) + 
+  scale_fill_gradient(low = "white", high = "darkgray") + 
+  theme_bw()+
+  theme(legend.position = "none", text = element_text(size = 21))
+```
+
+simulate conditional ratings book a given book b (of same rater)
+
+```{r}
+ratings_paired_raters = matrix(nrow = 0, ncol = 2)
+counter = 0
+attempts = 0
+while(counter < NR_SAMPLES){
+  attempts = attempts + 1
+  set.seed(attempts)
+  random_user = sample(unique(df$user_id), 1)
+  user_ratings = df[df$user_id == random_user, "book_rating_user_num"]
+  
+  if(length(user_ratings) > 1){
+  ratings_paired_raters= rbind(sample(user_ratings, 2), ratings_paired_raters)
+  counter = counter + 1
+  }
+}
+
+conditional_ratings_prob2 = prop.table(table(ratings_paired_raters[,1], ratings_paired_raters[,2]), margin = 2)
+conditional_ratings_prob2 = as.data.frame(conditional_ratings_prob2)
+colnames(conditional_ratings_prob2) = c("Rating for Book 2", "Rating for Book 1", "t")
+conditional_ratings_prob2["Rating B | A"] = gsub("0.", ".", as.character(round(conditional_ratings_prob2$t, 2)), fixed = T)
+
+
+plot_same_rater_diff_books <- ggplot(conditional_ratings_prob2, aes(`Rating for Book 1`, `Rating for Book 2` )) +
+  geom_tile(aes(fill = t)) + 
+  geom_label(aes(label = `Rating B | A`), alpha = 0.3, size = 9) + 
+  scale_fill_gradient(low = "white", high = "darkgray") + 
+  theme_bw() +
+  theme(legend.position = "none", text = element_text(size = 21))
+```
+
+compare two samples of three raters for same book
+
+```{r}
+ratings_paired_book6 = matrix(nrow = 0, ncol = 6)
+attempts = 0
+counter = 0
+while(counter < NR_SAMPLES){
+  attempts = attempts + 1
+  set.seed(attempts)
+  random_book = sample(unique(df$book_href), 1)
+  user_ratings = df[df$book_href == random_book, "book_rating_user_num"]
+  if(length(user_ratings) > 5){
+  ratings_paired_book6= rbind(sample(user_ratings, 6), ratings_paired_book6)
+  counter = counter + 1
+  }
+}
+triplet_averages_book = data.frame(triplet1 = rowMeans(ratings_paired_book6[,1:3]), triplet2 = rowMeans(ratings_paired_book6[,4:6]))
+
+conditional_book6 = as.data.frame(triplet_averages_book)
+colnames(conditional_book6) = c( "Rater D,E,F", "Rater A,B,C")
+
+
+p = ggplot(conditional_book6, aes(`Rater A,B,C`, `Rater D,E,F` )) +
+  geom_point(alpha  = 0.1) +
+  geom_smooth(method = "lm", color = "black", linewidth = 0.3, fill = "gray") +
+  theme_bw() + 
+  theme(text = element_text(size=21))
+
+plt_rater_triplets = ggExtra::ggMarginal(p, type = "density")
+```
+
+compare two samples of three books from same user
+
+```{r}
+
+ratings_paired_raters6 = matrix(nrow = 0, ncol = 6)
+attempts = 0
+counter = 0
+while(counter < NR_SAMPLES){
+  attempts = attempts + 1
+  set.seed(attempts)
+  random_user = sample(unique(df$user_id), 1)
+  user_ratings = df[df$user_id == random_user, "book_rating_user_num"]
+  if(length(user_ratings) > 5){
+  ratings_paired_raters6= rbind(sample(user_ratings, 6), ratings_paired_raters6)
+  counter = counter + 1
+  }
+}
+triplet_averages = data.frame(triplet1 = rowMeans(ratings_paired_raters6[,1:3]), triplet2 = rowMeans(ratings_paired_raters6[,4:6]))
+
+conditional_ratings6 = as.data.frame(triplet_averages)
+colnames(conditional_ratings6) = c( "Book 4,5,6", "Book 1,2,3")
+ 
+p2 = ggplot(conditional_ratings6, aes(`Book 1,2,3`, `Book 4,5,6` )) +
+  geom_point(alpha  = 0.1) +
+  geom_smooth(method = "lm", color = "black", fill = "gray", linewidth = 0.3) +
+  theme_bw() + 
+  theme(text = element_text(size=21))
+
+plt_book_triplets = ggExtra::ggMarginal(p2, type = "density")
+```
+
+```{r}
+library(patchwork)
+png("rater vs book plot.png", width = 1200, height = 600)
+(plot_same_book_diff_raters +  plt_rater_triplets) /  plot_spacer() / (plot_same_rater_diff_books + plt_book_triplets) + plot_layout(heights = c(1,0.07 ,1))
+dev.off()
+```
+
+# simulate sample and overall agreement correlation
+
+```{r}
+sample_sizes <- c(1, 5, 10, 15, 20)
+simulation_results <- vector("list", length(sample_sizes))
+names(simulation_results) = sample_sizes
+
+for(ss in names(simulation_results)){
+  counter = 1
+  s_ratings = c()
+  p_ratings = c()
+  i_ratings = c()
+  attempt = 1
+  while(counter < 1000){
+    set.seed(attempt + 100000)
+    attempt = attempt + 1
+    random_book = sample(df$book_href)
+    user_ratings = df$book_rating_user_num[df$book_href == random_book]
+    if(length(user_ratings) > as.numeric(ss)){
+      counter = counter + 1
+      sample_ratings = sample(user_ratings, as.numeric(ss) + 1)
+      single_rating = sample_ratings[1]
+      sample_ratings = sample_ratings[2:length(sample_ratings)]
+      
+      i_ratings = c(i_ratings, single_rating)
+      s_ratings = c(s_ratings, mean(sample_ratings))
+      p_ratings = c(p_ratings, mean(user_ratings))
+
+    }
+   
+  }
+  result_all = cor.test(s_ratings, p_ratings)
+  result_ind = cor.test(s_ratings, i_ratings)
+  simulation_results[[ss]] = 
+     list(cor_sample_all = result_all$estimate, 
+          conf_interval_all = result_all$conf.int,
+          cor_sample_ind = result_ind$estimate, 
+          conf_interval_ind = result_ind$conf.int)
+}
+```
+
+```{r}
+library(comprehenr)
+c_s = to_vec(for(ss in simulation_results)ss[["cor_sample_all"]])
+l_s = to_vec(for(ss in simulation_results)ss[["conf_interval_all"]][1])
+u_s = to_vec(for(ss in simulation_results)ss[["conf_interval_all"]][2])
+ss = as.numeric(names(simulation_results))
+plot_df = data.frame(ss = ss, corcoef = c_s, upper = u_s, lower = l_s)
+
+all_plot = ggplot(plot_df, aes(x = ss, y = corcoef)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = lower, ymax = upper), width = 0.2) + 
+  theme_bw() + 
+  ylab("r(Sample, All Ratings)") + 
+  xlab("Sample Size") + 
+  theme(text = element_text(size = 21)) + 
+  ylim(-0.1, 0.5)
+
+
+c_s = to_vec(for(ss in simulation_results)ss[["cor_sample_ind"]])
+l_s = to_vec(for(ss in simulation_results)ss[["conf_interval_ind"]][1])
+u_s = to_vec(for(ss in simulation_results)ss[["conf_interval_ind"]][2])
+ss = as.numeric(names(simulation_results))
+plot_df_ind = data.frame(ss = ss, corcoef = c_s, upper = u_s, lower = l_s)
+
+ind_plot = ggplot(plot_df_ind, aes(x = ss, y = corcoef))  +
+  geom_point() +
+  geom_errorbar(aes(ymin = lower, ymax = upper), width = 0.2) + 
+  theme_bw() + 
+  ylab("r(Sample, Single Rater)") + 
+  xlab("Sample Size") + 
+  theme(text = element_text(size = 21))+ 
+  ylim(-0.1, 0.5)
+
+png("simulation sample agreement.png", width = 1200, height = 300)
+ind_plot  + plot_spacer() + all_plot +  plot_layout(widths = c(1, 0.06, 1))
+
+dev.off()
+```
+
+# sentiment ICC analysis
+
+```{r}
+#for logistic: https://osf.io/preprints/psyarxiv/v68wb authors of file fx.R
+sentiment_df = df[df$sentiment_label != "nan",]
+if(length(unique(sentiment_df$sentiment_label)) != 2){ stop("invalid sentiment scores")}
+sentiment_df$sentiment_label = ifelse(sentiment_df$sentiment_label == "POSITIVE", 1, 0)
+if(length(unique(sentiment_df$sentiment_label)) != 2){ stop("now invalid sentiment scores")}
+
+model = lme4::glmer(sentiment_label ~ (1|user_id) + (1|book_href), data=sentiment_df, family="binomial")
+```
+
+```{r}
+source("devine_custom_functions.R")
+bootstrap_sentim <- bootstrap_icc_custom(model, gr=c('user_id', "book_href"), method=NULL, B = 100, seed = 42)
+
+write.csv(bootstrap_sentim, "bootstrap_results_sentim.csv")
+```
+
+```{r}
+bootstrap_sentim = read.csv("bootstrap_results_sentim.csv")
+summary(bootstrap_sentim$user_id)
+quantile(bootstrap_sentim$user_id, 0.025)
+quantile(bootstrap_sentim$user_id, 0.975)
+summary(bootstrap_sentim$book_href)
+quantile(bootstrap_sentim$book_href, 0.025)
+quantile(bootstrap_sentim$book_href, 0.975)
+bootstrap_sentim$diff = bootstrap_sentim$user_id / bootstrap_sentim$book_href
+summary(bootstrap_sentim$diff)
+quantile(bootstrap_sentim$diff, 0.025)
+quantile(bootstrap_sentim$diff, 0.975)
+```
+
+# agreement in review topics
+
+```{r}
+# one-hot-encode gpt's 6 topic labels for reviews
+
+library(dplyr, warn.conflicts = F)
+library(ggplot2)
+library(lme4)
+topics = c("review_confusion", "review_characters", "review_addiction", "review_boredom", "review_summary", "review_craft")
+topic_df = read.csv("fiction.csv")
+one_hot_encode_reviews <- function(review) {
+  encoded <- rep(0, 6)
+  if (grepl("\\[", review) & grepl("\\]", review)){
+    nums = as.numeric(unlist(strsplit(gsub("[^0-9]", "", review), "")))
+      encoded[nums] <- 1
+  }
+  return(encoded)
+}
+
+topic_df <- topic_df %>%
+  filter(gpt_review_labels != "labels missing") %>%
+  mutate(encoded = lapply(gpt_review_labels, one_hot_encode_reviews)) 
+
+m = matrix(NA, nrow = nrow(topic_df), ncol = 6)
+colnames(m) = topics
+
+for(i in 1:nrow(topic_df)){
+  enc = unlist(topic_df$encoded[i])
+  m[i,] = enc
+}
+topic_df = cbind(topic_df, m)
+topic_df$encoded = NULL
+```
+
+```{r}
+# compute agreement in topics mentioned
+# ICC
+# conditional prob
+# zz <- file("nonconvergence_message.Rout", open="wt")
+# sink(zz, type = "message")
+# model = lme4::glmer(review_summary ~ (1|user_id) +(1|book_href), data=topic_df, family="binomial")
+# sink()
+```
+
+conditional probability plots
+
+```{r}
+tables_topics = list()
+attempt = 1
+nr_iterations = 1000
+
+for(topic in topics){
+  
+  mention_pairs = matrix(NA, nrow = nr_iterations, ncol = 2)
+  colnames(mention_pairs) = c("Rater A", "Rater B")
+    books_sanity = c()
+    user_ratings_sanity = c()
+    counter = 0
+    
+    while(counter < nr_iterations){
+      set.seed(attempt)
+      attempt = attempt + 1
+      random_book = sample(unique(topic_df$book_href), 1)
+      user_ratings = topic_df[topic_df$book_href == random_book,topic]
+      user_ratings_sanity = c(length(user_ratings), user_ratings_sanity)
+      if(length(user_ratings) >= 2){
+        books_sanity = c(books_sanity, random_book)
+        counter = counter + 1
+        sample_ratings = sample(user_ratings, 2)
+        mention_pairs[counter,] = c(sample_ratings[1], sample_ratings[2])
+        
+      }
+    }
+    
+    print(summary(user_ratings_sanity))
+    print(length(unique(books_sanity)))
+tables_topics[[topic]] = table(mention_pairs[,"Rater A"], mention_pairs[,"Rater B"])
+}
+```
+
+```{r}
+plotting_df_list = list()
+
+for(topic in topics){
+
+  t_df = as.data.frame(tables_topics[topic])
+  colnames(t_df) = c("ReviewerA", "ReviewerB", "Freq")
+  t_df$ReviewerA = as.character(t_df$ReviewerA)
+  t_df$ReviewerB = as.character(t_df$ReviewerB)
+  t_df["topic"] = topic
+  t_df$cond_prob = NA
+  t_df$lower = NA
+  t_df$upper = NA
+  
+  prior = 1
+  for(row in 1:nrow(t_df)){
+    #nr_trials
+    relevant = t_df[t_df$ReviewerA  == t_df$ReviewerA[row],]
+    
+    signal = relevant$Freq[relevant$ReviewerB  == t_df$ReviewerB[row]]
+    non_signal = sum(relevant$Freq) - signal
+    
+    t_df$cond_prob[row] = signal / sum(relevant$Freq) 
+    t_df$lower[row] = qbeta(0.025, signal + prior, non_signal + prior)
+      t_df$upper[row] = qbeta(0.975, signal + prior, non_signal + prior)
+  }
+
+
+plotting_df_list[[topic]] = t_df
+  
+}
+
+plotting_df <- do.call(rbind, plotting_df_list)
+plotting_df$topic = gsub("review_", "", plotting_df$topic)
+
+plotting_df$topic = recode(plotting_df$topic,
+                           "addiction" = "feeling\naddicted",
+                           "summary" = "content\nsummary",
+                           "boredom" = "feeling\nbored",
+                           "craft" = "author's\nskill/style",
+                           "characters" = "characters",
+                           "confusion" = "feeling\nconfused")
+
+plotting_df$ReviewerA =recode(plotting_df$ReviewerA,
+                          "0" = "didn't mention...",
+                          "1" = "also mentioned")
+```
+
+```{r}
+png("review_topics.png", width = 700, height = 480)
+ggplot(plotting_df[plotting_df$ReviewerB == "1",], aes(topic, cond_prob, colour = ReviewerA)) +
+  geom_point(size = 3, position = position_dodge(width = 0.3)) +
+  geom_errorbar(aes(ymin = lower, ymax = upper), position = position_dodge(width = 0.3), width = 0.1, linewidth = 1) +
+  theme_bw() + 
+  scale_color_manual(values = c( "black", "gray"),
+                     labels = c("also mentioned...", "didn't mention...")) +
+  theme(text = element_text(size = 17)) +
+  labs(x = element_blank(),
+       y = "Probability that review A mentions...",
+       color = "...if review B...")
+dev.off()
+```
+
+```{r}
+
+#maybe repeat for conditional prob within reviewer rather than book?
+```
